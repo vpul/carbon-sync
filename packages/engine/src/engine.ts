@@ -5,7 +5,6 @@ import {
   type ServerMessage,
   sha256Hex,
 } from '@carbon-sync/protocol';
-import { merge } from './merge.js';
 import type {
   Clock,
   Connection,
@@ -15,12 +14,12 @@ import type {
   TimerHandle,
   Transport,
 } from './ports.js';
+import { type Resolution, resolve } from './resolve.js';
 
 /** A tombstones use an empty hash; a real SHA-256 is always 64 hex characters. */
 const TOMBSTONE_HASH = '';
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
-const ECHO_LIMIT = 8;
 
 export type SyncStatus = 'offline' | 'connecting' | 'syncing' | 'idle';
 
@@ -38,6 +37,7 @@ export interface SyncEngineOptions {
   url: string;
   token: string;
   debounceMs?: number;
+  ignore?: readonly string[];
   onEvent?: (event: SyncEvent) => void;
 }
 
@@ -70,6 +70,14 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** `resolve` guarantees content for these actions; null means a programming error. */
+function requireText(value: string | null, action: Resolution['action']): string {
+  if (value === null) {
+    throw new Error(`resolve returned ${action} without content`);
+  }
+  return value;
+}
+
 /**
  * Client sync state machine. All server frames are serialized through one
  * queue, and state is persisted only after the matching disk change has been
@@ -83,6 +91,7 @@ export class SyncEngine {
   private readonly url: string;
   private readonly token: string;
   private readonly debounceMs: number;
+  private readonly ignore: readonly string[];
   private readonly onEvent: ((event: SyncEvent) => void) | undefined;
 
   private state: SyncState = { cursor: 0, deviceId: '', files: {} };
@@ -100,7 +109,6 @@ export class SyncEngine {
   private readonly pendingPaths = new Set<string>();
   private pendingRenames: { from: string; to: string }[] = [];
   private inflight: Inflight | null = null;
-  private readonly echoes = new Map<string, string[]>();
   private reqCounter = 0;
 
   constructor(options: SyncEngineOptions) {
@@ -111,6 +119,7 @@ export class SyncEngine {
     this.url = options.url;
     this.token = options.token;
     this.debounceMs = options.debounceMs ?? 500;
+    this.ignore = options.ignore ?? [];
     this.onEvent = options.onEvent;
   }
 
@@ -200,8 +209,8 @@ export class SyncEngine {
     if (!this.running) {
       return;
     }
-    if (!isSyncable(to)) {
-      if (isSyncable(from)) {
+    if (!this.syncable(to)) {
+      if (this.syncable(from)) {
         const timer = this.debounces.get(from);
         if (timer !== undefined) {
           this.clock.clearTimeout(timer);
@@ -212,7 +221,7 @@ export class SyncEngine {
       }
       return;
     }
-    if (!isSyncable(from)) {
+    if (!this.syncable(from)) {
       this.scheduleLocal(to);
       return;
     }
@@ -238,7 +247,6 @@ export class SyncEngine {
     this.pendingPaths.clear();
     this.pendingRenames = [];
     this.inflight = null;
-    this.echoes.clear();
     this.reconnectAttempt = 0;
     this.frameChain = Promise.resolve();
   }
@@ -247,8 +255,12 @@ export class SyncEngine {
     return !this.running || generation !== this.generation;
   }
 
+  private syncable(path: string): boolean {
+    return isSyncable(path, this.ignore);
+  }
+
   private scheduleLocal(path: string): void {
-    if (!this.running || !isSyncable(path)) {
+    if (!this.running || !this.syncable(path)) {
       return;
     }
     const previous = this.debounces.get(path);
@@ -386,6 +398,19 @@ export class SyncEngine {
     generation: number,
   ): Promise<void> {
     this.reconnectAttempt = 0;
+    if (frame.cursor < this.state.cursor) {
+      // The server lost its state (new deploy name or wiped Durable Object).
+      // Start over as a fresh device so local files are re-uploaded.
+      this.emit({ type: 'error', detail: 'server-reset' });
+      this.state.cursor = 0;
+      this.state.files = {};
+      await this.persist(generation);
+      if (this.isStale(generation)) {
+        return;
+      }
+      this.syncNow();
+      return;
+    }
     for (const change of frame.changes) {
       if (this.isStale(generation)) {
         return;
@@ -414,7 +439,7 @@ export class SyncEngine {
     if (this.isStale(generation)) {
       return;
     }
-    const local = new Set(listed.filter((path) => isSyncable(path)));
+    const local = new Set(listed.filter((path) => this.syncable(path)));
     for (const path of local) {
       const entry = this.state.files[path];
       if (entry === undefined) {
@@ -434,7 +459,7 @@ export class SyncEngine {
       }
     }
     for (const path of Object.keys(this.state.files)) {
-      if (!isSyncable(path) || local.has(path)) {
+      if (!this.syncable(path) || local.has(path)) {
         continue;
       }
       const entry = this.state.files[path];
@@ -451,7 +476,7 @@ export class SyncEngine {
     save = true,
   ): Promise<void> {
     const path = change.path;
-    if (!isSyncable(path)) {
+    if (!this.syncable(path)) {
       this.advanceCursor(seq);
       if (save) await this.persist(generation);
       return;
@@ -473,87 +498,63 @@ export class SyncEngine {
     if (this.isStale(generation)) {
       return;
     }
-    const localHash = local === null ? TOMBSTONE_HASH : await sha256Hex(local);
-    if (this.isStale(generation)) {
-      return;
-    }
 
-    const hasBase = existing !== undefined && existing.hash !== TOMBSTONE_HASH;
+    const resolution = resolve({
+      base: existing !== undefined && existing.hash !== TOMBSTONE_HASH ? existing.base : null,
+      local,
+      remote,
+    });
+
     let pushLocal = false;
-
-    if (remote === null) {
-      if (local === null) {
-        this.state.files[path] = { rev: change.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH };
-      } else if (hasBase && localHash === existing.hash) {
+    switch (resolution.action) {
+      case 'noop-adopt':
+        this.emit({ type: 'applied', path, detail: 'adopted' });
+        break;
+      case 'write-remote':
+        await this.fs.write(path, requireText(remote, 'write-remote'));
+        if (this.isStale(generation)) {
+          return;
+        }
+        this.emit({ type: 'applied', path, detail: local === null ? 'remote-wins' : 'wrote' });
+        break;
+      case 'remove-local':
         await this.fs.remove(path);
         if (this.isStale(generation)) {
           return;
         }
-        this.state.files[path] = { rev: change.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH };
         this.emit({ type: 'applied', path, detail: 'removed' });
-      } else {
+        break;
+      case 'keep-local-push':
         // Remote delete vs local edit: the local file wins and is recreated.
-        this.state.files[path] = { rev: change.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH };
         pushLocal = true;
-      }
-    } else if (!hasBase) {
-      if (local === null) {
-        await this.fs.write(path, remote);
+        break;
+      case 'conflict-copy':
+        await this.conflictCopy(
+          path,
+          requireText(local, 'conflict-copy'),
+          requireText(remote, 'conflict-copy'),
+          generation,
+        );
         if (this.isStale(generation)) {
           return;
         }
-        this.recordEcho(path, remoteHash);
-        this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-        this.emit({ type: 'applied', path, detail: 'wrote' });
-      } else if (localHash === remoteHash) {
-        // Same bytes without a shared base: adopt the server revision, do not write.
-        this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-        this.emit({ type: 'applied', path, detail: 'adopted' });
-      } else {
-        await this.conflictCopy(path, local, remote, remoteHash, generation);
-        if (this.isStale(generation)) {
-          return;
+        break;
+      case 'merge':
+        if (resolution.merged !== local) {
+          await this.fs.write(path, resolution.merged);
+          if (this.isStale(generation)) {
+            return;
+          }
         }
-        this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-      }
-    } else if (localHash === existing.hash) {
-      if (localHash === remoteHash) {
-        this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-        this.emit({ type: 'applied', path, detail: 'adopted' });
-      } else {
-        await this.fs.write(path, remote);
-        if (this.isStale(generation)) {
-          return;
-        }
-        this.recordEcho(path, remoteHash);
-        this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-        this.emit({ type: 'applied', path, detail: 'wrote' });
-      }
-    } else if (local === null) {
-      // Local delete vs remote edit: the remote content comes back.
-      await this.fs.write(path, remote);
-      if (this.isStale(generation)) {
-        return;
-      }
-      this.recordEcho(path, remoteHash);
-      this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-      this.emit({ type: 'applied', path, detail: 'remote-wins' });
-    } else if (localHash === remoteHash) {
-      this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-      this.emit({ type: 'applied', path, detail: 'adopted' });
-    } else {
-      const merged = merge(existing.base, local, remote);
-      if (merged !== local) {
-        await this.fs.write(path, merged);
-        if (this.isStale(generation)) {
-          return;
-        }
-      }
-      this.state.files[path] = { rev: change.rev, hash: remoteHash, base: remote };
-      this.emit({ type: 'merged', path });
-      pushLocal = true;
+        this.emit({ type: 'merged', path });
+        pushLocal = true;
+        break;
     }
 
+    this.state.files[path] =
+      remote === null
+        ? { rev: change.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH }
+        : { rev: change.rev, hash: remoteHash, base: remote };
     this.advanceCursor(seq);
     if (pushLocal) {
       this.pendingPaths.add(path);
@@ -569,7 +570,6 @@ export class SyncEngine {
     path: string,
     local: string,
     remote: string,
-    remoteHash: string,
     generation: number,
   ): Promise<void> {
     const short = this.state.deviceId.slice(0, 8);
@@ -594,7 +594,6 @@ export class SyncEngine {
     if (this.isStale(generation)) {
       return;
     }
-    this.recordEcho(path, remoteHash);
     await this.fs.write(conflictPath, local);
     if (this.isStale(generation)) {
       return;
@@ -661,6 +660,16 @@ export class SyncEngine {
 
     const path = inflight.path;
     const current = frame.current;
+    if (current.rev === 0 && current.content === null) {
+      // The server has no row for this path (reset or a fresh Durable Object):
+      // drop the stale revision and re-push whatever is on disk as a create.
+      delete this.state.files[path];
+      this.pendingPaths.add(path);
+      await this.persist(generation);
+      this.pump();
+      return;
+    }
+
     const existing = this.state.files[path];
     if (existing !== undefined && existing.rev >= current.rev) {
       // A change frame already resolved this revision; the reject is stale.
@@ -673,63 +682,67 @@ export class SyncEngine {
       return;
     }
 
-    if (current.content === null) {
-      this.state.files[path] = { rev: current.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH };
-      if (local !== null) {
-        // Remote delete vs local edit: local wins as a create at the tombstone rev.
-        this.pendingPaths.add(path);
-      }
-      await this.persist(generation);
-      this.pump();
-      return;
-    }
-
-    const currentHash = await sha256Hex(current.content);
+    const remote = current.content;
+    const remoteHash = remote === null ? TOMBSTONE_HASH : await sha256Hex(remote);
     if (this.isStale(generation)) {
       return;
     }
 
-    if (local === null) {
-      // Local delete vs remote edit: remote wins, write it back.
-      await this.fs.write(path, current.content);
-      if (this.isStale(generation)) {
-        return;
-      }
-      this.recordEcho(path, currentHash);
-      this.state.files[path] = { rev: current.rev, hash: currentHash, base: current.content };
-      this.emit({ type: 'applied', path, detail: 'remote-wins' });
-      await this.persist(generation);
-      this.pump();
-      return;
-    }
+    const resolution = resolve({
+      base: existing !== undefined && existing.hash !== TOMBSTONE_HASH ? existing.base : null,
+      local,
+      remote,
+    });
 
-    const localHash = await sha256Hex(local);
-    if (this.isStale(generation)) {
-      return;
-    }
-    const hasBase = existing !== undefined && existing.hash !== TOMBSTONE_HASH;
-
-    if (localHash === currentHash) {
-      this.state.files[path] = { rev: current.rev, hash: currentHash, base: current.content };
-    } else if (!hasBase) {
-      await this.conflictCopy(path, local, current.content, currentHash, generation);
-      if (this.isStale(generation)) {
-        return;
-      }
-      this.state.files[path] = { rev: current.rev, hash: currentHash, base: current.content };
-    } else {
-      const merged = merge(existing.base, local, current.content);
-      if (merged !== local) {
-        await this.fs.write(path, merged);
+    switch (resolution.action) {
+      case 'noop-adopt':
+        this.emit({ type: 'applied', path, detail: 'adopted' });
+        break;
+      case 'write-remote':
+        await this.fs.write(path, requireText(remote, 'write-remote'));
         if (this.isStale(generation)) {
           return;
         }
-      }
-      this.state.files[path] = { rev: current.rev, hash: currentHash, base: current.content };
-      this.emit({ type: 'merged', path });
-      this.pendingPaths.add(path);
+        this.emit({ type: 'applied', path, detail: local === null ? 'remote-wins' : 'wrote' });
+        break;
+      case 'remove-local':
+        await this.fs.remove(path);
+        if (this.isStale(generation)) {
+          return;
+        }
+        this.emit({ type: 'applied', path, detail: 'removed' });
+        break;
+      case 'keep-local-push':
+        // Remote delete vs local edit: local wins as a create.
+        this.pendingPaths.add(path);
+        break;
+      case 'conflict-copy':
+        await this.conflictCopy(
+          path,
+          requireText(local, 'conflict-copy'),
+          requireText(remote, 'conflict-copy'),
+          generation,
+        );
+        if (this.isStale(generation)) {
+          return;
+        }
+        break;
+      case 'merge':
+        if (resolution.merged !== local) {
+          await this.fs.write(path, resolution.merged);
+          if (this.isStale(generation)) {
+            return;
+          }
+        }
+        this.emit({ type: 'merged', path });
+        this.pendingPaths.add(path);
+        break;
     }
 
+    this.state.files[path] =
+      remote === null
+        ? { rev: current.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH }
+        : { rev: current.rev, hash: remoteHash, base: remote };
     await this.persist(generation);
     this.pump();
   }
@@ -848,17 +861,12 @@ export class SyncEngine {
     }
 
     const existing = this.state.files[path];
-    const echoed = this.consumeEcho(path, hash);
     if (content === null) {
       if (existing === undefined || existing.hash === TOMBSTONE_HASH) {
         this.pump();
         return;
       }
     } else if (existing !== undefined && existing.hash === hash) {
-      this.pump();
-      return;
-    }
-    if (echoed) {
       this.pump();
       return;
     }
@@ -918,31 +926,6 @@ export class SyncEngine {
   private nextReqId(): string {
     this.reqCounter += 1;
     return String(this.reqCounter);
-  }
-
-  private recordEcho(path: string, hash: string): void {
-    const hashes = this.echoes.get(path) ?? [];
-    hashes.push(hash);
-    if (hashes.length > ECHO_LIMIT) {
-      hashes.shift();
-    }
-    this.echoes.set(path, hashes);
-  }
-
-  private consumeEcho(path: string, hash: string): boolean {
-    const hashes = this.echoes.get(path);
-    if (hashes === undefined) {
-      return false;
-    }
-    const index = hashes.indexOf(hash);
-    if (index === -1) {
-      return false;
-    }
-    hashes.splice(index, 1);
-    if (hashes.length === 0) {
-      this.echoes.delete(path);
-    }
-    return true;
   }
 
   private setStatus(next: SyncStatus): void {

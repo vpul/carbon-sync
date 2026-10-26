@@ -210,6 +210,7 @@ export default class CarbonSyncPlugin extends Plugin {
       url: vaultSocketUrl(setup.url, setup.vault),
       token: setup.token,
       debounceMs: this.settings.debounceMs,
+      ignore: this.settings.extraIgnoreGlobs,
       onEvent: (event) => {
         if (lifecycle === this.lifecycle) {
           this.handleEvent(event);

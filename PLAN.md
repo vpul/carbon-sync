@@ -125,8 +125,8 @@ Engine rules (this is the heart; every rule gets a test):
    - ignore rows with `rev <= base.rev`.
 6. On (re)connect after `welcome`: scan `fs.list()`; untracked files -> push create; tracked files whose
    hash differs from base -> push; tracked files missing locally -> push delete.
-7. **Echo suppression:** writes made by the engine record the expected hash; the next local event for
-   that path with that hash is dropped.
+7. **Echo suppression:** no per-write hash bookkeeping. A local event is dropped when the path's content
+   hash already equals the tracked base hash, so a real edit back to an old echo is still pushed.
 8. Reconnect with exponential backoff (1 s -> 30 s, jitter). `syncNow()` forces reconnect + full scan.
 9. Path filter (in `protocol`): skip `.obsidian/`, `.trash/`, `.git/`, `.carbon/`, dotfiles, and
    non-text extensions. Configurable extra ignore globs.

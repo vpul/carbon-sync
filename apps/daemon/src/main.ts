@@ -38,6 +38,7 @@ export function createRuntime(
     clock,
     url: vaultSocketUrl(config.url, config.vault),
     token: config.token,
+    ignore: config.ignore,
     ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
   });
   return { engine, fs, state };

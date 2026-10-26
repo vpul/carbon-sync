@@ -1,4 +1,5 @@
 import { setImmediate as tick } from 'node:timers/promises';
+import { sha256Hex } from '@carbon-sync/protocol';
 import { describe, expect, it } from 'vitest';
 import { SyncEngine, type SyncEvent } from './engine.js';
 import type { Clock, Connection, TimerHandle, Transport } from './ports.js';
@@ -59,7 +60,7 @@ class Door implements Transport {
   online = true;
   private connection: Connection | null = null;
 
-  constructor(private readonly inner: Transport) {}
+  constructor(public inner: Transport) {}
 
   async connect(url: string): Promise<Connection> {
     if (!this.online) {
@@ -95,6 +96,7 @@ function makeDevice(
   clock: Clock,
   fs: MemoryFileSystem = new MemoryFileSystem(),
   state: MemoryStateStore = new MemoryStateStore(),
+  ignore: readonly string[] = [],
 ): Device {
   const door = new Door(server);
   const events: SyncEvent[] = [];
@@ -106,6 +108,7 @@ function makeDevice(
     url: 'loopback://vault',
     token: 'test-token',
     debounceMs: 500,
+    ignore,
     onEvent: (event) => events.push(event),
   });
   return { fs, state, door, engine, events };
@@ -116,7 +119,11 @@ async function until(check: () => boolean, label: string): Promise<void> {
     if (check()) {
       return;
     }
-    await tick();
+    // The engine hashes through Web Crypto, which resolves on the libuv
+    // threadpool; a microtask-only spin can outrun it under parallel load.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 1);
+    await promise;
   }
   throw new Error(`timed out: ${label}`);
 }
@@ -466,6 +473,124 @@ describe('SyncEngine', () => {
       (event) => event.type === 'merged' && event.detail === 'conflict-copy',
     );
     expect(merged).toHaveLength(1);
+  });
+
+  it('pushes a local edit that returns to content the server once echoed', async () => {
+    const clock = new FakeClock();
+    const server = new LoopbackServer();
+    const { a, b } = await seedPair(clock, server, 'one');
+    // No local event is delivered for the engine's own write on B.
+    await until(() => b.fs.files.get('note.md') === 'one', 'B applies the remote write');
+    await settle();
+    const pushes = server.pushes;
+
+    await b.fs.write('note.md', 'two');
+    b.engine.notifyLocalChange('note.md');
+    await clock.advance(500);
+    await until(() => server.store.file('note.md')?.content === 'two', 'B edit pushed');
+
+    await b.fs.write('note.md', 'one');
+    b.engine.notifyLocalChange('note.md');
+    await clock.advance(500);
+    await until(() => server.store.file('note.md')?.content === 'one', 'returning edit pushed');
+    await until(() => b.state.snapshot().files['note.md']?.base === 'one', 'B persisted the ack');
+    await until(() => a.fs.files.get('note.md') === 'one', 'A applied the returning edit');
+    await settle();
+
+    expect(server.pushes).toBe(pushes + 2);
+    expect(b.state.snapshot().files['note.md']?.rev).toBe(server.store.file('note.md')?.rev);
+  });
+
+  it('re-uploads every file after the server loses its state', async () => {
+    const clock = new FakeClock();
+    const server = new LoopbackServer();
+    const a = makeDevice(server, clock);
+    await a.engine.start();
+    await settle();
+    await a.fs.write('a.md', 'alpha');
+    a.engine.notifyLocalChange('a.md');
+    await a.fs.write('nested/b.md', 'beta');
+    a.engine.notifyLocalChange('nested/b.md');
+    await clock.advance(500);
+    await until(
+      () =>
+        server.store.file('a.md') !== undefined && server.store.file('nested/b.md') !== undefined,
+      'files on the first server',
+    );
+    await settle();
+    expect(a.state.snapshot().cursor).toBeGreaterThan(0);
+
+    const fresh = new LoopbackServer();
+    a.door.inner = fresh;
+    a.engine.syncNow();
+    await until(
+      () =>
+        fresh.store.file('a.md')?.content === 'alpha' &&
+        fresh.store.file('nested/b.md')?.content === 'beta',
+      'files re-uploaded to the fresh server',
+    );
+    await until(
+      () =>
+        a.state.snapshot().files['a.md']?.rev === 1 &&
+        a.state.snapshot().files['nested/b.md']?.rev === 1 &&
+        a.state.snapshot().cursor === fresh.store.cursor(),
+      'fresh revisions persisted',
+    );
+    await settle();
+
+    expect(a.state.snapshot().files['a.md']?.rev).toBe(1);
+    expect(a.state.snapshot().files['nested/b.md']?.rev).toBe(1);
+    expect(a.state.snapshot().cursor).toBe(fresh.store.cursor());
+    expect(a.events.some((event) => event.detail === 'server-reset')).toBe(true);
+  });
+
+  it('re-pushes a local edit when the server has no row for the saved revision', async () => {
+    const clock = new FakeClock();
+    const server = new LoopbackServer();
+    const hash = await sha256Hex('old');
+    const state = new MemoryStateStore({
+      cursor: 0,
+      deviceId: 'stale-device',
+      files: { 'a.md': { rev: 5, hash, base: 'old' } },
+    });
+    const fs = new MemoryFileSystem({ 'a.md': 'old' });
+    const a = makeDevice(server, clock, fs, state);
+    await a.engine.start();
+    await until(() => a.engine.status() === 'idle', 'A idle');
+    await settle();
+    expect(server.store.file('a.md')).toBeUndefined();
+
+    await a.fs.write('a.md', 'new');
+    a.engine.notifyLocalChange('a.md');
+    await clock.advance(500);
+    await until(() => server.store.file('a.md')?.content === 'new', 'edit pushed as a create');
+    await until(() => a.state.snapshot().files['a.md']?.rev === 1, 'create acked as rev 1');
+    await settle();
+
+    expect(server.store.file('a.md')?.rev).toBe(1);
+    expect(a.state.snapshot().files['a.md']?.base).toBe('new');
+  });
+
+  it('honours extra ignore globs for remote changes', async () => {
+    const clock = new FakeClock();
+    const server = new LoopbackServer();
+    const a = makeDevice(server, clock);
+    const b = makeDevice(server, clock, new MemoryFileSystem(), new MemoryStateStore(), [
+      'Private/**',
+    ]);
+    await a.engine.start();
+    await b.engine.start();
+    await settle();
+
+    await a.fs.write('Private/x.md', 'secret');
+    a.engine.notifyLocalChange('Private/x.md');
+    await clock.advance(500);
+    await until(() => server.store.file('Private/x.md') !== undefined, 'ignored path on server');
+    await until(() => b.state.snapshot().cursor > 0, 'cursor advanced past the ignored change');
+    await settle();
+
+    expect(b.fs.files.has('Private/x.md')).toBe(false);
+    expect(b.state.snapshot().cursor).toBe(server.store.cursor());
   });
 });
 
