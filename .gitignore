@@ -1,1 +1,9 @@
 briefs/out/
+
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+coverage/
+*.log
+apps/plugin/main.js
