@@ -1,0 +1,16 @@
+{
+  "name": "@carbon-sync/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@carbon-sync/protocol": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261026.1",
+    "wrangler": "4.153.0"
+  }
+}
