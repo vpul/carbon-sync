@@ -1,0 +1,20 @@
+{
+  "name": "@carbon-sync/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "carbon-sync": "dist/carbon-sync.mjs"
+  },
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/carbon-sync.mjs --banner:js='#!/usr/bin/env node' --main-fields=module,main",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@carbon-sync/engine": "*",
+    "@carbon-sync/protocol": "*"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

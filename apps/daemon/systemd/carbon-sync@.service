@@ -1,0 +1,13 @@
+[Unit]
+Description=Carbon Sync daemon for vault %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/carbon-sync daemon --vault %i
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
