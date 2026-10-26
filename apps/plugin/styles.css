@@ -1,0 +1,15 @@
+.carbon-sync-status {
+  cursor: pointer;
+}
+
+.carbon-sync-status.is-synced {
+  color: var(--color-green);
+}
+
+.carbon-sync-status.is-syncing {
+  color: var(--color-yellow);
+}
+
+.carbon-sync-status.is-offline {
+  color: var(--color-red);
+}

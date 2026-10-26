@@ -1,0 +1,9 @@
+{
+  "id": "carbon-sync",
+  "name": "Carbon Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Real-time vault sync through your own Cloudflare Durable Object.",
+  "author": "Vipul Chaudhary",
+  "isDesktopOnly": false
+}

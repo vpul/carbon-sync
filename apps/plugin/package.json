@@ -1,0 +1,19 @@
+{
+  "name": "@carbon-sync/plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@carbon-sync/engine": "*",
+    "@carbon-sync/protocol": "*"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "obsidian": "1.14.4"
+  }
+}
