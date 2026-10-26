@@ -57,6 +57,15 @@ with a DIFFERENT hash and no base, merge with base `""` is wrong (duplicates); i
 write remote content to the path and save the local version as `<name> (conflict <deviceId-short>).md`,
 then push that conflict file. Emit `merged` with detail `conflict-copy`.
 
+## Ordering rules (from the server review, mandatory)
+
+- Process inbound server frames strictly one at a time, in arrival order, through a single async queue.
+  Never apply two frames concurrently (file writes are async).
+- Persist `cursor` only AFTER the change carrying that seq has been applied to disk and its base saved.
+  `ack.cursor` may advance the cursor only through the same queue. A crash must never leave a persisted
+  cursor ahead of an unapplied change. Add a test: kill the engine (stop without flush) between receiving
+  a change and applying it, restart, the change still arrives via welcome.
+
 ## Done when
 
 `npm run typecheck && npm run lint && npm test` pass at the root.
