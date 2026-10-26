@@ -32,7 +32,7 @@ setup code. Run `npx wrangler login` first.
 
 Or use the button:
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://github.com/vpul/carbon-sync/tree/main/apps/server)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vpul/carbon-sync/tree/main/apps/server)
 
 The button needs this repository to be public. It prompts for `CARBON_TOKEN`; generate a value with
 `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`.
