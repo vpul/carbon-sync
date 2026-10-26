@@ -1,0 +1,4 @@
+# Shared secret every client must present in `hello` (at least 32 characters).
+# The Deploy to Cloudflare button prompts for this value.
+# Generate one: node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+CARBON_TOKEN=

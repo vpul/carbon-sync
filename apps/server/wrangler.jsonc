@@ -1,0 +1,23 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "carbon-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-26",
+  "observability": {
+    "enabled": true
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "VAULT",
+        "class_name": "VaultObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["VaultObject"]
+    }
+  ]
+}

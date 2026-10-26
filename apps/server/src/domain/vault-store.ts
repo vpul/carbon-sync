@@ -32,6 +32,9 @@ export type RenameResult =
   | { kind: 'reject'; current: { rev: number; content: string | null } }
   | { kind: 'conflict' };
 
+/** Current state of one path, tombstones included. */
+export type FileState = { rev: number; deleted: boolean; content: string | null };
+
 type FileRow = {
   path: string;
   rev: number;
@@ -107,6 +110,15 @@ export class VaultStore {
 
   cursor(): number {
     return this.sql.exec<{ v: number }>("SELECT v FROM meta WHERE k = 'seq'").one().v;
+  }
+
+  /** Current state of `path`, or `undefined` if it was never written. */
+  file(path: string): FileState | undefined {
+    const row = this.lookup(path);
+    if (row === undefined) {
+      return undefined;
+    }
+    return { rev: row.rev, deleted: row.deleted === 1, content: row.content };
   }
 
   changesSince(since: number): Change[] {
