@@ -19,6 +19,13 @@ both edits.
 - Concurrent edits are merged with `reconcile-text` (word diff). The file on disk is always the source of
   truth on that device.
 
+## Network use
+
+Carbon Sync talks to exactly one remote service: the Cloudflare Worker you deploy yourself, whose URL
+is carried in the setup code. It sends file text and revisions to that Worker and receives changes from
+it. There is no telemetry, no analytics, and no third-party service. The server can read every file it
+stores, so don't sync secrets through it.
+
 ## Setup in 3 steps
 
 ### 1. Deploy the server
