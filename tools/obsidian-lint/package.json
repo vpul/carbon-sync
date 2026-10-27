@@ -1,0 +1,15 @@
+{
+  "name": "carbon-sync-obsidian-lint",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs Obsidian's community review rules (eslint-plugin-obsidianmd) against the repo. Standalone, not a workspace: typescript-eslint does not support TypeScript 7 yet, so this folder pins TypeScript 6 in its own node_modules while the repo builds with 7.",
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@eslint/json": "0.14.0",
+    "eslint": "9.39.5",
+    "eslint-plugin-obsidianmd": "0.4.2",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
+  }
+}

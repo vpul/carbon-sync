@@ -155,6 +155,9 @@ Every automatic merge is reported through an `onMerge` event so apps can log it.
 - Errors: typed error classes in `protocol`; one place per app maps them to wire errors / notices.
 - Prefer plain functions and small classes with injected dependencies; no singletons, no globals.
 - TypeScript strict, ESM, Node 22. Biome for lint+format. Vitest for tests, colocated as `*.test.ts`.
+- Obsidian's community review rules (`eslint-plugin-obsidianmd`) run in `npm test` via
+  `tools/obsidian-lint`. Any finding in code bundled into the plugin fails the build. That folder is a
+  standalone package pinning TypeScript 6, because typescript-eslint does not support TypeScript 7 yet.
 - Small dependencies only: `reconcile-text`, `obsidian` (types), `esbuild`, `wrangler`, `vitest`, `@biomejs/biome`, `typescript`.
   Daemon uses Node built-ins only (global `WebSocket`, `fs.watch` recursive, `node:util` parseArgs).
 

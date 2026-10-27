@@ -89,8 +89,9 @@ Node 22 and npm workspaces.
 ```sh
 npm install
 npm run typecheck
-npm test          # unit tests with vitest
+npm test          # manifest check, Obsidian review rules, unit tests
 npm run lint      # biome
+npm run lint:obsidian  # Obsidian community review rules only
 npm run e2e       # wrangler dev plus two daemons
 npm run dev -w apps/server
 npm run build -w apps/daemon
@@ -99,6 +100,12 @@ npm run build -w apps/plugin
 
 `npm run e2e` builds the daemon, starts `wrangler dev` on port 8799 with temporary state, and runs two
 daemons against temporary vaults. It is not part of `npm test`.
+
+`npm run lint:obsidian` runs the same `eslint-plugin-obsidianmd` rules as the community directory's
+automated review, with the scanner's ignore list. Any finding in code that ships in the plugin
+(`apps/plugin`, `packages/engine`, `packages/protocol`) fails. Findings in the daemon and server are
+listed but don't fail, because Node code always draws these warnings and they don't block listing.
+The first run installs its own dependencies into `tools/obsidian-lint`.
 
 ## Releasing the plugin
 

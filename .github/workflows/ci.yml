@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tools/obsidian-lint/package-lock.json
+
+      - name: Install
+        run: |
+          npm ci
+          npm ci --prefix tools/obsidian-lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint (Biome)
+        run: npm run lint
+
+      # Manifest sync, Obsidian community review rules, then unit tests.
+      - name: Test
+        run: npm test
+
+      - name: Build plugin
+        run: npm run build
