@@ -3,7 +3,7 @@
 // in lockstep and checks a release tag against the manifest version.
 //
 // Usage: node scripts/check-manifest.mjs
-//        GITHUB_REF_NAME=0.1.0 node scripts/check-manifest.mjs   (release mode)
+//        GITHUB_REF_TYPE=tag GITHUB_REF_NAME=0.1.1 node scripts/check-manifest.mjs   (release mode)
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -39,7 +39,9 @@ if (versions[canonical.version] !== canonical.minAppVersion) {
   );
 }
 
-const tag = process.env.GITHUB_REF_NAME;
+// GITHUB_REF_NAME is the tag on tag pushes but the branch name ("main") on branch
+// pushes, so only compare when GitHub says the ref is a tag.
+const tag = process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : undefined;
 if (tag && tag !== canonical.version) {
   failures.push(`release tag ${tag} does not match manifest version ${canonical.version}`);
 }
