@@ -1,11 +1,11 @@
 name: Release Obsidian plugin
 
-# Tags like 0.1.0 (must match apps/plugin/manifest.json). Non-plugin tags such
-# as daemon-1.2.0 or server-v2 do not match, so they stay out of this workflow.
+# Only plain x.y.z tags trigger this. Tags like daemon-0.2.0 or v1.0.0 do not,
+# so other packages can version independently.
 on:
   push:
     tags:
-      - "*.*.*"
+      - "[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
   release:

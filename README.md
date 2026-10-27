@@ -93,6 +93,23 @@ npm run build -w apps/plugin
 `npm run e2e` builds the daemon, starts `wrangler dev` on port 8799 with temporary state, and runs two
 daemons against temporary vaults. It is not part of `npm test`.
 
+## Releasing the plugin
+
+Obsidian reads `manifest.json` from the root of the repo, so the root copy and
+`apps/plugin/manifest.json` must match. `npm test` checks that, along with `versions.json`.
+
+1. Bump `version` in `apps/plugin/manifest.json` and the matching copy in `manifest.json`.
+2. Add the new version to `apps/plugin/versions.json` with its minimum Obsidian version.
+3. `npm test`, commit, then tag with the exact version and push it:
+
+```sh
+git tag -a 0.2.0 -m "0.2.0" && git push origin 0.2.0
+```
+
+The `Release Obsidian plugin` workflow builds the plugin, checks the tag against the manifest, and
+creates a **draft** release with `main.js`, `manifest.json`, and `styles.css`. Add release notes and
+publish it. Tags for other packages must not look like `x.y.z`, so use `daemon-0.2.0` or `server-0.2.0`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
