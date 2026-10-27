@@ -83,6 +83,14 @@ class Door implements Transport {
   }
 }
 
+/** Reads yield a macrotask so two debounce timers can fire while a push is preparing. */
+class SlowReadFileSystem extends MemoryFileSystem {
+  override async read(path: string): Promise<string | null> {
+    await tick();
+    return super.read(path);
+  }
+}
+
 interface Device {
   fs: MemoryFileSystem;
   state: MemoryStateStore;
@@ -379,6 +387,36 @@ describe('SyncEngine', () => {
     await until(() => server.pushes === 1, 'one debounced push');
     await settle();
     expect(server.pushLog).toEqual([{ path: 'rapid.md', content: 'v5' }]);
+  });
+
+  it('pushes one path at a time when two files land in the same debounce window', async () => {
+    const clock = new FakeClock();
+    const server = new LoopbackServer();
+    const a = makeDevice(server, clock, new SlowReadFileSystem());
+    await a.engine.start();
+    await settle();
+
+    await a.fs.write('a.md', 'aaa');
+    a.engine.notifyLocalChange('a.md');
+    await a.fs.write('b.md', 'bbb');
+    a.engine.notifyLocalChange('b.md');
+    await clock.advance(500);
+    await until(
+      () => a.events.filter((event) => event.type === 'pushed').length === 2,
+      'both pushes acked',
+    );
+    await settle();
+
+    // Without single-flight pump both pushes were prepared at once, the second
+    // clobbered inflight, and the first ack was dropped: that file never got a rev.
+    const pushed = a.events.flatMap((event) => (event.type === 'pushed' ? [event.path] : []));
+    expect(pushed.sort()).toEqual(['a.md', 'b.md']);
+    expect(Object.keys((await a.state.load()).files).sort()).toEqual(['a.md', 'b.md']);
+
+    await a.fs.remove('b.md');
+    a.engine.notifyLocalDelete('b.md');
+    await clock.advance(500);
+    await until(() => server.store.file('b.md')?.deleted === true, 'delete reaches the server');
   });
 
   it('never pushes ignored paths', async () => {

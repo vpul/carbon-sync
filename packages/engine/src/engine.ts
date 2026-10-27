@@ -109,6 +109,8 @@ export class SyncEngine {
   private readonly pendingPaths = new Set<string>();
   private pendingRenames: { from: string; to: string }[] = [];
   private inflight: Inflight | null = null;
+  /** True while a push or rename is being prepared; keeps pump single-flight. */
+  private sending = false;
   private reqCounter = 0;
 
   constructor(options: SyncEngineOptions) {
@@ -247,6 +249,7 @@ export class SyncEngine {
     this.pendingPaths.clear();
     this.pendingRenames = [];
     this.inflight = null;
+    this.sending = false;
     this.reconnectAttempt = 0;
     this.frameChain = Promise.resolve();
   }
@@ -650,9 +653,11 @@ export class SyncEngine {
     if (inflight === null || inflight.reqId !== frame.reqId) {
       return;
     }
-    this.inflight = null;
+    // inflight stays set until the rejection is fully resolved: pump() must not
+    // start another push while this one is between reads and state updates.
 
     if (inflight.kind === 'rename') {
+      this.inflight = null;
       this.fallbackRename(inflight.from, inflight.to);
       this.pump();
       return;
@@ -666,6 +671,7 @@ export class SyncEngine {
       delete this.state.files[path];
       this.pendingPaths.add(path);
       await this.persist(generation);
+      this.inflight = null;
       this.pump();
       return;
     }
@@ -673,6 +679,7 @@ export class SyncEngine {
     const existing = this.state.files[path];
     if (existing !== undefined && existing.rev >= current.rev) {
       // A change frame already resolved this revision; the reject is stale.
+      this.inflight = null;
       this.pump();
       return;
     }
@@ -744,6 +751,10 @@ export class SyncEngine {
         ? { rev: current.rev, hash: TOMBSTONE_HASH, base: TOMBSTONE_HASH }
         : { rev: current.rev, hash: remoteHash, base: remote };
     await this.persist(generation);
+    if (this.isStale(generation)) {
+      return;
+    }
+    this.inflight = null;
     this.pump();
   }
 
@@ -827,13 +838,23 @@ export class SyncEngine {
   }
 
   private pump(): void {
-    if (!this.running || this.connection === null || this.inflight !== null) {
+    if (!this.running || this.connection === null || this.inflight !== null || this.sending) {
       return;
     }
 
+    const generation = this.generation;
     const rename = this.pendingRenames.shift();
     if (rename !== undefined) {
-      void this.prepareRename(rename.from, rename.to, this.generation);
+      this.sending = true;
+      void this.prepareRename(rename.from, rename.to, generation).then(
+        () => this.finishSending(generation),
+        (error: unknown) => {
+          if (!this.isStale(generation)) {
+            this.emitError(rename.from, error);
+          }
+          this.finishSending(generation);
+        },
+      );
       return;
     }
 
@@ -847,7 +868,30 @@ export class SyncEngine {
       return;
     }
     this.pendingPaths.delete(next);
-    void this.sendPush(next, this.generation, this.connection);
+    const connection = this.connection;
+    this.sending = true;
+    void this.sendPush(next, generation, connection).then(
+      () => this.finishSending(generation),
+      (error: unknown) => {
+        if (!this.isStale(generation)) {
+          this.emitError(next, error);
+        }
+        this.finishSending(generation);
+      },
+    );
+  }
+
+  /**
+   * Releases the single-flight slot and lets the next path start. Two pumps must
+   * never prepare a push at the same time: both would see inflight === null, send
+   * two frames, and the loser's ack would be dropped, losing that file's revision.
+   */
+  private finishSending(generation: number): void {
+    if (generation !== this.generation) {
+      return;
+    }
+    this.sending = false;
+    this.pump();
   }
 
   private async sendPush(path: string, generation: number, connection: Connection): Promise<void> {
