@@ -1,0 +1,60 @@
+name: Release Obsidian plugin
+
+# Tags like 0.1.0 (must match apps/plugin/manifest.json). Non-plugin tags such
+# as daemon-1.2.0 or server-v2 do not match, so they stay out of this workflow.
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Verify manifest and tag
+        run: node scripts/check-manifest.mjs
+
+      - name: Build plugin
+        run: npm run build -w apps/plugin
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release
+          cp apps/plugin/main.js apps/plugin/manifest.json apps/plugin/styles.css release/
+          # Obsidian fetches these by exact filename, so no extra files, no nesting.
+          ls -la release
+
+      - name: Generate artifact attestation
+        # Attestations need a public repo; this auto-skips while the repo is private.
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release/main.js
+            release/manifest.json
+            release/styles.css
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title="$tag" \
+            --draft \
+            --notes="Carbon Sync $tag" \
+            release/main.js release/manifest.json release/styles.css
