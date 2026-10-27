@@ -73,7 +73,8 @@ export class VaultObject extends DurableObject<Env> {
       transaction: (fn) => ctx.storage.transactionSync(fn),
       now: () => Date.now(),
     });
-    ctx.blockConcurrencyWhile(async () => {
+    // Errors here reset the object; the runtime handles the rejection.
+    void ctx.blockConcurrencyWhile(async () => {
       this.store.migrate();
     });
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));

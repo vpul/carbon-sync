@@ -1,162 +1,185 @@
 import type { SyncStatus } from '@carbon-sync/engine';
-import { type ButtonComponent, PluginSettingTab, Setting } from 'obsidian';
+import {
+  type ButtonComponent,
+  PluginSettingTab,
+  type Setting,
+  type SettingDefinitionItem,
+} from 'obsidian';
 import type CarbonSyncPlugin from '../main';
 
+/**
+ * Declarative settings (Obsidian 1.13+): rows are indexed for the global settings
+ * search. Simple values bind through `control`; the connection row and the
+ * ignore globs need side effects, so they use `render`.
+ */
 export class CarbonSyncSettingTab extends PluginSettingTab {
-  private resultEl: HTMLElement | null = null;
-  private connectButton: ButtonComponent | null = null;
   private lastResult = '';
 
   constructor(private readonly carbon: CarbonSyncPlugin) {
     super(carbon.app, carbon);
   }
 
-  display(): void {
-    void this.render();
+  override getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      this.carbon.isConnected() ? this.connectedRow() : this.setupRow(),
+      {
+        type: 'page',
+        name: 'Advanced',
+        desc: 'Ignore rules, push delay, and merge notices.',
+        items: [
+          this.ignoreGlobsRow(),
+          {
+            name: 'Debounce (ms)',
+            desc: 'How long to wait after an edit before pushing it.',
+            control: { type: 'number', key: 'debounceMs', min: 0, step: 1, defaultValue: 500 },
+          },
+          {
+            name: 'Show a notice when notes are merged',
+            control: { type: 'toggle', key: 'showMergeNotices' },
+          },
+        ],
+      },
+    ];
   }
 
-  private async render(): Promise<void> {
-    const { containerEl } = this;
-    containerEl.empty();
-    this.resultEl = null;
-    this.connectButton = null;
-    if (this.carbon.isConnected()) {
-      await this.renderConnected(containerEl);
-    } else {
-      this.renderSetup(containerEl);
+  override getControlValue(key: string): unknown {
+    if (key === 'debounceMs') {
+      return this.carbon.settings.debounceMs;
     }
-    this.renderAdvanced(containerEl);
+    if (key === 'showMergeNotices') {
+      return this.carbon.settings.showMergeNotices;
+    }
+    return undefined;
   }
 
-  private async renderConnected(containerEl: HTMLElement): Promise<void> {
+  override async setControlValue(key: string, value: unknown): Promise<void> {
+    if (key === 'debounceMs' && typeof value === 'number' && Number.isFinite(value)) {
+      this.carbon.settings.debounceMs = Math.max(0, Math.round(value));
+      await this.carbon.saveSettings();
+      // The engine reads debounce at start. Number controls commit on blur or
+      // Enter, so this restarts once per edit, not once per keystroke.
+      await this.carbon.restartEngine();
+      return;
+    }
+    if (key === 'showMergeNotices' && typeof value === 'boolean') {
+      this.carbon.settings.showMergeNotices = value;
+      await this.carbon.saveSettings();
+    }
+  }
+
+  private connectedRow(): SettingDefinitionItem {
     const info = this.carbon.connectionInfo();
-    const status = this.carbon.currentStatus();
-    const setting = new Setting(containerEl)
-      .setName(info === null ? 'Connected' : `Vault: ${info.vault}`)
-      .setDesc(info === null ? 'Carbon Sync is running.' : `Server: ${info.host}`);
-    setting.addButton((button) => {
-      button
-        .setButtonText('Disconnect')
-        .setWarning()
-        .onClick(async () => {
-          await this.carbon.disconnect();
-          this.lastResult = '';
-          this.display();
+    return {
+      name: info === null ? 'Connected' : `Vault: ${info.vault}`,
+      desc: info === null ? 'Carbon Sync is running.' : `Server: ${info.host}`,
+      aliases: ['setup code', 'disconnect', 'server'],
+      render: (setting: Setting) => {
+        setting.addButton((button) => {
+          button
+            .setButtonText('Disconnect')
+            .setDestructive()
+            .onClick(async () => {
+              await this.carbon.disconnect();
+              this.lastResult = '';
+              this.update();
+            });
         });
-    });
-    const files = await this.carbon.trackedCount();
-    containerEl.createDiv({
-      cls: 'carbon-sync-result',
-      text:
-        status === 'idle'
-          ? `Connected · ${files} files`
-          : `${STATUS_LABELS[status]} · ${files} files`,
-    });
+        const statusEl = setting.infoEl.createDiv({ cls: 'carbon-sync-result' });
+        void this.fillStatus(statusEl);
+      },
+    };
   }
 
-  private renderSetup(containerEl: HTMLElement): void {
-    let code = this.carbon.settings.setupCode;
-    const setting = new Setting(containerEl)
-      .setName('Setup code')
-      .setDesc('Paste the code printed when you deployed the Carbon Sync server.');
-    setting.addText((text) => {
-      text.inputEl.type = 'password';
-      text.setPlaceholder('carbon1:…');
-      text.setValue(code);
-      text.onChange((value) => {
-        code = value;
-      });
-      text.inputEl.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          void this.runConnect(code);
+  private setupRow(): SettingDefinitionItem {
+    return {
+      name: 'Setup code',
+      desc: 'Paste the code printed when you deployed the Carbon Sync server.',
+      aliases: ['connect', 'server', 'token'],
+      render: (setting: Setting) => {
+        let code = this.carbon.settings.setupCode;
+        let connectButton: ButtonComponent | null = null;
+        const resultEl = setting.infoEl.createDiv({ cls: 'carbon-sync-result' });
+        if (this.lastResult.length > 0) {
+          resultEl.setText(this.lastResult);
         }
-      });
-    });
-    setting.addButton((button) => {
-      this.connectButton = button;
-      button
-        .setButtonText('Connect')
-        .setCta()
-        .onClick(() => void this.runConnect(code));
-    });
-    this.resultEl = containerEl.createDiv({ cls: 'carbon-sync-result' });
-    if (this.lastResult.length > 0) {
-      this.resultEl.setText(this.lastResult);
-    }
+        const connect = (): void => {
+          if (connectButton !== null) {
+            void this.runConnect(code, connectButton, resultEl);
+          }
+        };
+        setting.addText((text) => {
+          text.inputEl.type = 'password';
+          text.setPlaceholder('carbon1:…');
+          text.setValue(code);
+          text.onChange((value) => {
+            code = value;
+          });
+          text.inputEl.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              connect();
+            }
+          });
+        });
+        setting.addButton((button) => {
+          connectButton = button;
+          button.setButtonText('Connect').setCta().onClick(connect);
+        });
+      },
+    };
   }
 
-  private renderAdvanced(containerEl: HTMLElement): void {
-    const details = containerEl.createEl('details');
-    details.createEl('summary', { text: 'Advanced' });
-
-    let globsChanged = false;
-    new Setting(details)
-      .setName('Extra ignore globs')
-      .setDesc('One per line, matched against the full path (for example Private/**).')
-      .addTextArea((text) => {
-        text.setValue(this.carbon.settings.extraIgnoreGlobs.join('\n'));
-        text.inputEl.rows = 4;
-        text.onChange((value) => {
-          this.carbon.settings.extraIgnoreGlobs = value
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0);
-          globsChanged = true;
-          void this.carbon.saveSettings();
-        });
-        text.inputEl.addEventListener('blur', () => {
-          if (globsChanged) {
-            globsChanged = false;
-            void this.carbon.restartEngine();
-          }
-        });
-      });
-
-    let debounceChanged = false;
-    new Setting(details)
-      .setName('Debounce (ms)')
-      .setDesc('How long to wait after an edit before pushing it.')
-      .addText((text) => {
-        text.inputEl.type = 'number';
-        text.setValue(String(this.carbon.settings.debounceMs));
-        text.onChange((value) => {
-          const parsed = Number(value);
-          if (Number.isFinite(parsed) && parsed >= 0) {
-            this.carbon.settings.debounceMs = Math.round(parsed);
-            debounceChanged = true;
+  private ignoreGlobsRow(): SettingDefinitionItem {
+    return {
+      name: 'Extra ignore globs',
+      desc: 'One per line, matched against the full path (for example Private/**).',
+      render: (setting: Setting) => {
+        let changed = false;
+        setting.addTextArea((text) => {
+          text.setValue(this.carbon.settings.extraIgnoreGlobs.join('\n'));
+          text.inputEl.rows = 4;
+          text.onChange((value) => {
+            this.carbon.settings.extraIgnoreGlobs = value
+              .split('\n')
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            changed = true;
             void this.carbon.saveSettings();
-          }
+          });
+          // Restart on blur so typing a glob doesn't reconnect per keystroke.
+          text.inputEl.addEventListener('blur', () => {
+            if (changed) {
+              changed = false;
+              void this.carbon.restartEngine();
+            }
+          });
         });
-        text.inputEl.addEventListener('blur', () => {
-          if (debounceChanged) {
-            debounceChanged = false;
-            void this.carbon.restartEngine();
-          }
-        });
-      });
-
-    new Setting(details).setName('Show a notice when notes are merged').addToggle((toggle) => {
-      toggle.setValue(this.carbon.settings.showMergeNotices);
-      toggle.onChange((value) => {
-        this.carbon.settings.showMergeNotices = value;
-        void this.carbon.saveSettings();
-      });
-    });
+      },
+    };
   }
 
-  private async runConnect(code: string): Promise<void> {
-    const button = this.connectButton;
-    button?.setDisabled(true).setButtonText('Connecting…');
+  private async fillStatus(el: HTMLElement): Promise<void> {
+    const status = this.carbon.currentStatus();
+    const files = await this.carbon.trackedCount();
+    el.setText(`${STATUS_LABELS[status]} · ${files} files`);
+  }
+
+  private async runConnect(
+    code: string,
+    button: ButtonComponent,
+    resultEl: HTMLElement,
+  ): Promise<void> {
+    button.setDisabled(true).setButtonText('Connecting…');
     const result = await this.carbon.connect(code);
     if (result.ok) {
       this.lastResult = '';
-      this.display();
+      // The set of rows changes (setup -> connected), so rebuild definitions.
+      this.update();
       return;
     }
     this.lastResult = result.message;
-    this.resultEl?.setText(result.message);
-    button?.setDisabled(false).setButtonText('Connect');
+    resultEl.setText(result.message);
+    button.setDisabled(false).setButtonText('Connect');
   }
 }
 

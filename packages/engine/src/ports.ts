@@ -33,8 +33,8 @@ export interface Connection {
   onClose(cb: (code: number) => void): void;
 }
 
-/** Opaque timer identity. Node timers and browser numeric ids both fit. */
-export type TimerHandle = unknown;
+/** A browser timer id (number) or a Node `Timeout` object. Opaque to the engine. */
+export type TimerHandle = number | object;
 
 /** Injected so tests control debounce and reconnect timing. */
 export interface Clock {

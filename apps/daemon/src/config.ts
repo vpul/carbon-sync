@@ -39,7 +39,7 @@ export function stateDir(): string {
 function assertAlias(alias: string): void {
   if (!isValidVaultId(alias)) {
     throw new Error(
-      `invalid alias "${alias}": use 1-63 lowercase letters, digits, or dashes (starting with a letter or digit)`,
+      `invalid alias "${String(alias)}": use 1-63 lowercase letters, digits, or dashes (starting with a letter or digit)`,
     );
   }
 }

@@ -151,7 +151,7 @@ export function parseClientMessage(raw: string): ClientMessage {
         baseRev: readCount(frame, 'baseRev', 'rename'),
       };
     default:
-      throw new ProtocolError('bad_request', `unknown client message type: ${frame.type}`);
+      throw new ProtocolError('bad_request', `unknown client message type: ${String(frame.type)}`);
   }
 }
 
@@ -222,6 +222,6 @@ export function parseServerMessage(raw: string): ServerMessage {
       };
     }
     default:
-      throw new ProtocolError('bad_request', `unknown server message type: ${frame.type}`);
+      throw new ProtocolError('bad_request', `unknown server message type: ${String(frame.type)}`);
   }
 }

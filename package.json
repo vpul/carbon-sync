@@ -11,6 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "build": "npm run build -w apps/plugin",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "biome check .",
     "format": "biome format --write .",

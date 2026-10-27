@@ -3,9 +3,9 @@ import { sha256Hex } from '@carbon-sync/protocol';
 import { describe, expect, it } from 'vitest';
 import { SyncEngine, type SyncEvent } from './engine.js';
 import type { Clock, Connection, TimerHandle, Transport } from './ports.js';
-import { LoopbackServer } from './testing/loopback.js';
-import { MemoryFileSystem } from './testing/memory-fs.js';
-import { MemoryStateStore } from './testing/memory-state.js';
+import { LoopbackServer } from './test/loopback.js';
+import { MemoryFileSystem } from './test/memory-fs.js';
+import { MemoryStateStore } from './test/memory-state.js';
 
 class FakeClock implements Clock {
   private current = 0;

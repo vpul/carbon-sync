@@ -6,12 +6,6 @@ const ALLOWED_EXTENSIONS: Record<string, true> = {
   '.txt': true,
   '.json': true,
 };
-const RESERVED_DIRS: Record<string, true> = {
-  '.obsidian': true,
-  '.trash': true,
-  '.git': true,
-  '.carbon': true,
-};
 const GLOB_SPECIALS = '\\^$.|+()[]{}?';
 
 /**
@@ -79,11 +73,9 @@ export function isSyncable(path: string, extraIgnore: readonly string[] = []): b
   if (!isValidPath(path)) {
     return false;
   }
+  // Any dot-prefixed segment is skipped. That covers the Obsidian config folder
+  // without hardcoding its name (users can rename it), plus .trash, .git and .carbon.
   const segments = path.split('/');
-  const first = segments[0] ?? '';
-  if (RESERVED_DIRS[first] === true) {
-    return false;
-  }
   if (segments.some((segment) => segment.startsWith('.'))) {
     return false;
   }

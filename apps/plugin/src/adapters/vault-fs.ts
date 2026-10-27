@@ -50,12 +50,8 @@ export class VaultFileSystem implements FileSystem {
   async remove(path: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (file instanceof TFile) {
-      if (typeof this.app.fileManager.trashFile === 'function') {
-        await this.app.fileManager.trashFile(file);
-      } else {
-        // Obsidian < 1.6.6 has no trashFile; keep deletes working.
-        await this.app.vault.delete(file);
-      }
+      // Respects the user's "Deleted files" preference (system trash, .trash, or permanent).
+      await this.app.fileManager.trashFile(file);
       return;
     }
     if (await this.app.vault.adapter.exists(path)) {
